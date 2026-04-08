@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,9 @@ var (
 
 	// osExit is the exit function (mockable for tests).
 	osExit = os.Exit
+
+	// unicodeRE matches \uXXXX sequences.
+	unicodeRE = regexp.MustCompile(`\\u[0-9a-fA-F]{4}`)
 )
 
 type config struct {
@@ -160,13 +164,25 @@ func scan(r io.Reader, u string, verbose bool) int {
 			}
 		case html.TextToken:
 			t := z.Token()
-			for _, m := range emailRE.FindAllString(t.Data, -1) {
+			data := unescapeUnicode(t.Data)
+			for _, m := range emailRE.FindAllString(data, -1) {
 				if record(m) {
 					count++
 				}
 			}
 		}
 	}
+}
+
+// unescapeUnicode replaces \uXXXX sequences with their actual characters.
+func unescapeUnicode(s string) string {
+	return unicodeRE.ReplaceAllStringFunc(s, func(m string) string {
+		r, err := strconv.ParseUint(m[2:], 16, 32)
+		if err != nil {
+			return m
+		}
+		return string(rune(r))
+	})
 }
 
 // record saves unique emails and prints them to stdout.
