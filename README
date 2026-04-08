@@ -1,0 +1,14 @@
+mailscraper
+
+A simple cli utility for extracting email addresses from websites
+
+USAGE:
+  mailscraper [-v] [-t timeout] [-a useragent] url ...
+
+FLAGS:
+  -v           verbose logging to stderr
+  -t duration  network timeout (e.g., 5s, 30s). default: 15s
+  -a string    custom user agent
+
+INSTALL:
+  go build -o mailscraper .
