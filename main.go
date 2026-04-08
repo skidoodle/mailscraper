@@ -35,7 +35,7 @@ var (
 	osExit = os.Exit
 
 	// unicodeRE matches \uXXXX sequences.
-	unicodeRE = regexp.MustCompile(`\\u[0-9a-fA-F]{4}`)
+	unicodeRE = regexp.MustCompile(`\\u[0-9a-fA-F]*`)
 )
 
 type config struct {

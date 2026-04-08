@@ -136,6 +136,27 @@ func TestRecord(t *testing.T) {
 	}
 }
 
+func TestUnescapeUnicode(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"no unicode", "no unicode"},
+		{"\\u003c", "<"},
+		{"hello \\u003cworld\\u003e", "hello <world>"},
+		{"\\u", "\\u"},
+		{"\\uGHIJ", "\\uGHIJ"},
+		{"\\u123456789", "\\u123456789"},
+	}
+
+	for _, tt := range tests {
+		got := unescapeUnicode(tt.input)
+		if got != tt.expected {
+			t.Errorf("unescapeUnicode(%q) = %q; want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
 func TestMainLogic(t *testing.T) {
 	// Setup a mock server
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
