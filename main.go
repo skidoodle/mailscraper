@@ -237,6 +237,20 @@ func getVersion(v, c, d string, rbi func() (*debug.BuildInfo, bool)) (string, st
 				v = info.Main.Version
 			}
 		}
+
+		if (c == "none" || c == "") && strings.Contains(v, "-") {
+			parts := strings.Split(v, "-")
+			if len(parts) >= 3 {
+				c = parts[len(parts)-1]
+				if (d == "unknown" || d == "") && len(parts[len(parts)-2]) == 14 {
+					t, err := time.Parse("20060102150405", parts[len(parts)-2])
+					if err == nil {
+						d = t.Format(time.RFC3339)
+					}
+				}
+			}
+		}
+
 		for _, s := range info.Settings {
 			switch s.Key {
 			case "vcs.revision":

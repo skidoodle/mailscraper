@@ -382,4 +382,15 @@ func TestGetVersion(t *testing.T) {
 	if v4 != "v1.2.3" || c4 != "hash123" || d4 != "2026-04-12" {
 		t.Errorf("expected resolution for devel/empty, got %s, %s, %s", v4, c4, d4)
 	}
+
+	// 5. Test pseudo-version parsing
+	mockPseudo := &debug.BuildInfo{
+		Main: debug.Module{Version: "v0.0.0-20230101000000-abcdef123456"},
+	}
+	v5, c5, d5 := getVersion("(devel)", "none", "unknown", func() (*debug.BuildInfo, bool) {
+		return mockPseudo, true
+	})
+	if c5 != "abcdef123456" || d5 != "2023-01-01T00:00:00Z" {
+		t.Errorf("expected pseudo-version resolution, got %s, %s, %s", v5, c5, d5)
+	}
 }
