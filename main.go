@@ -22,7 +22,7 @@ import (
 
 var (
 	// Version info set via ldflags by goreleaser
-	Version    = "dev"
+	Version    = "(devel)"
 	Commit     = "none"
 	CommitDate = "unknown"
 
@@ -232,17 +232,19 @@ func main() {
 // getVersion resolves the version, commit, and date using build info if needed.
 func getVersion(v, c, d string, rbi func() (*debug.BuildInfo, bool)) (string, string, string) {
 	if info, ok := rbi(); ok {
-		if v == "dev" {
-			v = info.Main.Version
+		if v == "dev" || v == "" || v == "(devel)" {
+			if info.Main.Version != "" && info.Main.Version != "(devel)" {
+				v = info.Main.Version
+			}
 		}
 		for _, s := range info.Settings {
 			switch s.Key {
 			case "vcs.revision":
-				if c == "none" {
+				if c == "none" || c == "" {
 					c = s.Value
 				}
 			case "vcs.time":
-				if d == "unknown" {
+				if d == "unknown" || d == "" {
 					d = s.Value
 				}
 			}

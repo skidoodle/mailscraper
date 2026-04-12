@@ -178,12 +178,12 @@ func TestUnescapeUnicode(t *testing.T) {
 			t.Errorf("unescapeUnicode(%q) = %q; want %q", tt.input, got, tt.expected)
 		}
 	}
-	
+
 	// Test the !ok branch by temporarily changing the regex
 	oldRE := unicodeRE
 	unicodeRE = regexp.MustCompile(`\\u[0-9a-gA-G]{4}`)
 	defer func() { unicodeRE = oldRE }()
-	
+
 	if unescapeUnicode("\\u003G") != "\\u003G" {
 		t.Error("expected unchanged string for invalid hex")
 	}
@@ -254,8 +254,8 @@ func TestMainLogic(t *testing.T) {
 	log.SetOutput(io.Discard)
 
 	tests := []struct {
-		name string
-		args []string
+		name  string
+		args  []string
 		stdin string
 	}{
 		{"NoArgs", []string{"cmd"}, ""},
@@ -319,7 +319,7 @@ func TestMainLogic(t *testing.T) {
 func TestMainFileError(t *testing.T) {
 	oldExit := osExit
 	defer func() { osExit = oldExit }()
-	
+
 	exitCalled := false
 	osExit = func(code int) {
 		exitCalled = true
@@ -328,7 +328,7 @@ func TestMainFileError(t *testing.T) {
 
 	os.Args = []string{"cmd", "-f", "non-existent-file"}
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
-	
+
 	log.SetOutput(io.Discard)
 
 	defer func() {
@@ -337,7 +337,7 @@ func TestMainFileError(t *testing.T) {
 			t.Error("expected exit on file error")
 		}
 	}()
-	
+
 	main()
 }
 
@@ -360,18 +360,26 @@ func TestGetVersion(t *testing.T) {
 	}
 
 	// 2. Test override prevention (values already set)
-	v2, c2, d2 := getVersion("v1.0.0", "commit", "date", func() (*debug.BuildInfo, bool) {
+	v2, c2, d2 := getVersion("v1.1.0", "commit", "date", func() (*debug.BuildInfo, bool) {
 		return mockInfo, true
 	})
-	if v2 != "v1.0.0" || c2 != "commit" || d2 != "date" {
+	if v2 != "v1.1.0" || c2 != "commit" || d2 != "date" {
 		t.Errorf("expected no override, got %s, %s, %s", v2, c2, d2)
 	}
 
 	// 3. Test failed ReadBuildInfo
-	v3, c3, d3 := getVersion("dev", "none", "unknown", func() (*debug.BuildInfo, bool) {
+	v3, c3, d3 := getVersion("(devel)", "none", "unknown", func() (*debug.BuildInfo, bool) {
 		return nil, false
 	})
-	if v3 != "dev" || c3 != "none" || d3 != "unknown" {
+	if v3 != "(devel)" || c3 != "none" || d3 != "unknown" {
 		t.Errorf("expected defaults on failure, got %s, %s, %s", v3, c3, d3)
+	}
+
+	// 4. Test (devel) and empty string resolution
+	v4, c4, d4 := getVersion("(devel)", "", "", func() (*debug.BuildInfo, bool) {
+		return mockInfo, true
+	})
+	if v4 != "v1.2.3" || c4 != "hash123" || d4 != "2026-04-12" {
+		t.Errorf("expected resolution for devel/empty, got %s, %s, %s", v4, c4, d4)
 	}
 }
