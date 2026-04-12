@@ -100,13 +100,8 @@ func main() {
 	flag.Parse()
 
 	if showVersion {
-		v := Version
-		if v == "dev" {
-			if info, ok := debug.ReadBuildInfo(); ok {
-				v = info.Main.Version
-			}
-		}
-		fmt.Printf("mailscraper %s (%s) built at %s\n", v, Commit, CommitDate)
+		v, c, d := getVersion(Version, Commit, CommitDate, debug.ReadBuildInfo)
+		fmt.Printf("mailscraper %s (%s) built at %s\n", v, c, d)
 		return
 	}
 
@@ -232,6 +227,28 @@ func main() {
 	if exitCode != 0 {
 		osExit(exitCode)
 	}
+}
+
+// getVersion resolves the version, commit, and date using build info if needed.
+func getVersion(v, c, d string, rbi func() (*debug.BuildInfo, bool)) (string, string, string) {
+	if info, ok := rbi(); ok {
+		if v == "dev" {
+			v = info.Main.Version
+		}
+		for _, s := range info.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				if c == "none" {
+					c = s.Value
+				}
+			case "vcs.time":
+				if d == "unknown" {
+					d = s.Value
+				}
+			}
+		}
+	}
+	return v, c, d
 }
 
 // fetch retrieves the target URL and triggers parsing.
