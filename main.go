@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -99,7 +100,13 @@ func main() {
 	flag.Parse()
 
 	if showVersion {
-		fmt.Printf("mailscraper %s (%s) built at %s\n", Version, Commit, CommitDate)
+		v := Version
+		if v == "dev" {
+			if info, ok := debug.ReadBuildInfo(); ok {
+				v = info.Main.Version
+			}
+		}
+		fmt.Printf("mailscraper %s (%s) built at %s\n", v, Commit, CommitDate)
 		return
 	}
 
