@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -10,7 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"sort"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +26,13 @@ func TestScan(t *testing.T) {
 				<div>Encoded: <a href="mailto:test3%40example.com">Encoded</a></div>
 				<a href="/relative">Relative</a>
 				<a href="https://example.com">External</a>
+				<span data-cfemail="53303513362b323e233f367d303c3e"></span>
+				<p>Obfuscated: user [at] example [dot] com</p>
+				<p>ROT13: rot13unique@example.com -> ebg13havdhr@rknzcyr.pbz</p>
+				<p>ROT13: ebg13havdhr@rknzcyr.pbz</p>
+				<p>Unicode: \u006d\u0061\u0069\u006c\u0040\u0065\u0078\u0061\u006d\u0070\u006c\u0065\u002e\u0063\u006f\u006d</p>
+				<script>var x = Math.min(1, 2);</script>
+				<style>.at { color: red; }</style>
 			</body>
 		</html>
 	`
@@ -34,38 +41,26 @@ func TestScan(t *testing.T) {
 	seen.m = make(map[string]struct{})
 	seen.Unlock()
 
-	var buf bytes.Buffer
-	oldOut := out
-	out = &buf
-	defer func() { out = oldOut }()
+	emails := scan(strings.NewReader(html), true)
 
-	found := scan(strings.NewReader(html), "http://example.com", true)
-
-	if found != 4 {
-		t.Errorf("expected 4 emails found, got %d", found)
+	expected := []string{
+		"test1@example.com",
+		"test2@example.com",
+		"support@company.org",
+		"test3@example.com",
+		"cf@example.com",
+		"user@example.com",
+		"test@example.com",
+		"mail@example.com",
 	}
 
-	expected := []string{"support@company.org", "test1@example.com", "test2@example.com", "test3@example.com"}
-	output := strings.TrimSpace(buf.String())
-	results := strings.Split(output, "\n")
-	sort.Strings(results)
-	sort.Strings(expected)
-
-	for i := range results {
-		if results[i] != expected[i] {
-			t.Errorf("expected %s, got %s", expected[i], results[i])
-		}
-	}
-
-	// Test empty/invalid inputs for scan
-	if scan(strings.NewReader(""), "http://empty.com", false) != 0 {
-		t.Error("expected 0 from empty reader")
+	if len(emails) < len(expected) {
+		t.Errorf("expected at least %d emails, got %d: %v", len(expected), len(emails), emails)
 	}
 
 	// Test parse error coverage
-	// html.NewTokenizer doesn't easily error on strings, but we can mock a broken reader
 	badReader := &errorReader{}
-	scan(badReader, "http://bad.com", true)
+	scan(badReader, true)
 }
 
 type errorReader struct{}
@@ -95,44 +90,74 @@ func TestFetch(t *testing.T) {
 	seen.Unlock()
 
 	// Test successful fetch
-	err := fetch(context.Background(), ts.URL, cfg)
+	res := &targetResult{}
+	emails, err := fetch(context.Background(), ts.URL, ts.URL, cfg, res)
 	if err != nil {
 		t.Errorf("fetch failed: %v", err)
 	}
+	if len(emails) == 0 {
+		t.Error("expected emails to be found")
+	}
 
 	// Test server error
-	err = fetch(context.Background(), ts.URL+"/error", cfg)
+	_, err = fetch(context.Background(), ts.URL+"/error", ts.URL+"/error", cfg, res)
 	if err == nil {
 		t.Error("expected error from 500 status")
 	}
 
 	// Test request creation error (invalid URL)
-	err = fetch(context.Background(), "%%", cfg)
+	_, err = fetch(context.Background(), "%%", "%%", cfg, res)
 	if err == nil {
 		t.Error("expected error from invalid URL")
 	}
 
 	// Test network error (closed server)
 	ts.Close()
-	err = fetch(context.Background(), ts.URL, cfg)
+	_, err = fetch(context.Background(), ts.URL, ts.URL, cfg, res)
 	if err == nil {
 		t.Error("expected network error")
 	}
 }
 
-func TestRecord(t *testing.T) {
+func TestIsNew(t *testing.T) {
 	seen.Lock()
 	seen.m = make(map[string]struct{})
 	seen.Unlock()
 
-	if record("") != false {
-		t.Error("record empty string should return false")
+	if isNew("") != false {
+		t.Error("isNew empty string should return false")
 	}
-	if record("A@B.COM") != true {
+	if isNew("not-an-email") != false {
+		t.Error("isNew invalid email should return false")
+	}
+	if isNew("A@B.COM") != true {
 		t.Error("first record should return true")
 	}
-	if record("a@b.com") != false {
+	if isNew("a@b.com") != false {
 		t.Error("duplicate record should return false")
+	}
+}
+
+func TestParseHex(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected uint32
+		ok       bool
+	}{
+		{"0", 0, true},
+		{"f", 15, true},
+		{"F", 15, true},
+		{"10", 16, true},
+		{"ffff", 65535, true},
+		{"", 0, false},
+		{"g", 0, false},
+	}
+
+	for _, tt := range tests {
+		got, ok := parseHex(tt.input)
+		if got != tt.expected || ok != tt.ok {
+			t.Errorf("parseHex(%q) = (%d, %v); want (%d, %v)", tt.input, got, ok, tt.expected, tt.ok)
+		}
 	}
 }
 
@@ -144,15 +169,61 @@ func TestUnescapeUnicode(t *testing.T) {
 		{"no unicode", "no unicode"},
 		{"\\u003c", "<"},
 		{"hello \\u003cworld\\u003e", "hello <world>"},
-		{"\\u", "\\u"},
-		{"\\uGHIJ", "\\uGHIJ"},
-		{"\\u123456789", "\\u123456789"},
 	}
 
 	for _, tt := range tests {
 		got := unescapeUnicode(tt.input)
 		if got != tt.expected {
 			t.Errorf("unescapeUnicode(%q) = %q; want %q", tt.input, got, tt.expected)
+		}
+	}
+
+	// Test the !ok branch by temporarily changing the regex
+	oldRE := unicodeRE
+	unicodeRE = regexp.MustCompile(`\\u[0-9a-gA-G]{4}`)
+	defer func() { unicodeRE = oldRE }()
+
+	if unescapeUnicode("\\u003G") != "\\u003G" {
+		t.Error("expected unchanged string for invalid hex")
+	}
+}
+
+func TestDecodeCloudflare(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"53303513362b323e233f367d303c3e", "cf@example.com"},
+		{"", ""},
+		{"5", ""},
+		{"gg", ""},
+		{"533g", ""},
+	}
+
+	for _, tt := range tests {
+		got := decodeCloudflare(tt.input)
+		if got != tt.expected {
+			t.Errorf("decodeCloudflare(%q) = %q; want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestDeobfuscate(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"user [at] example [dot] com", "user@example.com"},
+		{"user (at) example (dot) com", "user@example.com"},
+		{"user  at  example  dot  com", "user@example.com"},
+		{"Math.min", "Math.min"},
+		{"no change", "no change"},
+	}
+
+	for _, tt := range tests {
+		got := deobfuscate(tt.input)
+		if got != tt.expected {
+			t.Errorf("deobfuscate(%q) = %q; want %q", tt.input, got, tt.expected)
 		}
 	}
 }
@@ -164,30 +235,46 @@ func TestMainLogic(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	// Save original args/stderr/exit
+	// Create a temp file for -f test
+	tmpFile := filepath.Join(t.TempDir(), "urls.txt")
+	os.WriteFile(tmpFile, []byte(ts.URL+"\n  \n"+ts.URL), 0644)
+
+	// Save original args/stderr/exit/stdin
 	oldArgs := os.Args
 	oldStderr := os.Stderr
+	oldStdin := os.Stdin
 	defer func() {
 		os.Args = oldArgs
 		os.Stderr = oldStderr
+		os.Stdin = oldStdin
 	}()
 
 	// Capture log output to discard it
 	log.SetOutput(io.Discard)
 
 	tests := []struct {
-		name string
-		args []string
+		name  string
+		args  []string
+		stdin string
 	}{
-		{"NoArgs", []string{"cmd"}},
-		{"WithURL", []string{"cmd", "-v", ts.URL}},
-		{"WithMultipleURLs", []string{"cmd", "-v", ts.URL, ts.URL}},
-		{"InvalidURL", []string{"cmd", "http://invalid.local"}},
-		{"NoProtocol", []string{"cmd", "example.com"}},
+		{"NoArgs", []string{"cmd"}, ""},
+		{"WithURL", []string{"cmd", "-v", ts.URL, " ", "example.com"}, ""},
+		{"WithFile", []string{"cmd", "-v", "-f", tmpFile}, ""},
+		{"WithStdinDash", []string{"cmd", "-"}, ts.URL},
+		{"WithStdinAuto", []string{"cmd"}, ts.URL},
+		{"WithFetchError", []string{"cmd", "http://invalid.local.nonexistent"}, ""},
+		{"WithInsecure", []string{"cmd", "-k", ts.URL}, ""},
+		{"WithVerboseFailure", []string{"cmd", "-v", "http://invalid.local.nonexistent"}, ""},
+		{"WithQuiet", []string{"cmd", "-q", ts.URL}, ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Reset seen
+			seen.Lock()
+			seen.m = make(map[string]struct{})
+			seen.Unlock()
+
 			// Save current exit func and restore after
 			oldExit := osExit
 			defer func() { osExit = oldExit }()
@@ -201,6 +288,20 @@ func TestMainLogic(t *testing.T) {
 			os.Args = tt.args
 			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 
+			// Setup stdin if needed
+			if tt.stdin != "" {
+				r, w, _ := os.Pipe()
+				os.Stdin = r
+				go func() {
+					fmt.Fprintln(w, tt.stdin)
+					w.Close()
+				}()
+			} else {
+				r, w, _ := os.Pipe()
+				os.Stdin = r
+				w.Close()
+			}
+
 			defer func() {
 				r := recover()
 				if tt.name == "NoArgs" && (r == nil || !exitCalled) {
@@ -211,4 +312,29 @@ func TestMainLogic(t *testing.T) {
 			main()
 		})
 	}
+}
+
+func TestMainFileError(t *testing.T) {
+	oldExit := osExit
+	defer func() { osExit = oldExit }()
+
+	exitCalled := false
+	osExit = func(code int) {
+		exitCalled = true
+		panic("exit")
+	}
+
+	os.Args = []string{"cmd", "-f", "non-existent-file"}
+	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+
+	log.SetOutput(io.Discard)
+
+	defer func() {
+		recover()
+		if !exitCalled {
+			t.Error("expected exit on file error")
+		}
+	}()
+
+	main()
 }

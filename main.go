@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"io"
@@ -10,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +21,7 @@ import (
 
 var (
 	// emailRE matches common email address formats.
-	emailRE = regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
+	emailRE = regexp.MustCompile(`(?i)[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}`)
 
 	// seen tracks unique emails across all targets.
 	seen = struct {
@@ -35,32 +36,101 @@ var (
 	osExit = os.Exit
 
 	// unicodeRE matches \uXXXX sequences.
-	unicodeRE = regexp.MustCompile(`\\u[0-9a-fA-F]*`)
+	unicodeRE = regexp.MustCompile(`\\u[0-9a-fA-F]{4}`)
+
+	// common obfuscation patterns. Only match if bracketed or as independent words.
+	atPatterns  = regexp.MustCompile(`(?i)(\s+[\[\(\{\s]*at[\]\)\}\s]*\s+|[\[\(\{\s]+at[\]\)\}\s]+)`)
+	dotPatterns = regexp.MustCompile(`(?i)(\s+[\[\(\{\s]*dot[\]\)\}\s]*\s+|[\[\(\{\s]+dot[\]\)\}\s]+)`)
 )
 
+// rot13 decodes a rot13 encoded string.
+func rot13(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return 'a' + (r-'a'+13)%26
+		case r >= 'A' && r <= 'Z':
+			return 'A' + (r-'A'+13)%26
+		default:
+			return r
+		}
+	}, s)
+}
+
 type config struct {
-	timeout time.Duration
-	verbose bool
-	ua      string
+	timeout  time.Duration
+	verbose  bool
+	quiet    bool
+	insecure bool
+	ua       string
+	file     string
+}
+
+type targetResult struct {
+	orig   string
+	emails []string
+	err    error
+	status string
 }
 
 func main() {
 	log.SetFlags(0)
-	log.SetPrefix("mailscraper: ")
 
 	var cfg config
 	flag.DurationVar(&cfg.timeout, "t", 15*time.Second, "network timeout")
 	flag.BoolVar(&cfg.verbose, "v", false, "verbose output")
+	flag.BoolVar(&cfg.quiet, "q", false, "suppress non-error output")
+	flag.BoolVar(&cfg.insecure, "k", false, "allow insecure SSL connections")
 	flag.StringVar(&cfg.ua, "a", "mailscraper/1.1", "user-agent string")
+	flag.StringVar(&cfg.file, "f", "", "read URLs from file")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: %s [-v] [-t timeout] [-a useragent] url ...\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "usage: %s [-v] [-q] [-k] [-t timeout] [-a useragent] [-f file] [url ... | -]\n", os.Args[0])
 		flag.PrintDefaults()
 	}
 
 	flag.Parse()
 
 	targets := flag.Args()
+
+	// Handle file input
+	if cfg.file != "" {
+		f, err := os.Open(cfg.file)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to open file: %v\n", err)
+			osExit(1)
+			return
+		}
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			if t := strings.TrimSpace(scanner.Text()); t != "" {
+				targets = append(targets, t)
+			}
+		}
+		f.Close()
+	}
+
+	// Handle stdin if no targets or "-" is present
+	useStdin := false
+	for i, t := range targets {
+		if t == "-" {
+			useStdin = true
+			targets = append(targets[:i], targets[i+1:]...)
+			break
+		}
+	}
+	if len(targets) == 0 || useStdin {
+		fi, _ := os.Stdin.Stat()
+		if (fi.Mode() & os.ModeCharDevice) == 0 {
+			scanner := bufio.NewScanner(os.Stdin)
+			for scanner.Scan() {
+				if t := strings.TrimSpace(scanner.Text()); t != "" {
+					targets = append(targets, t)
+				}
+			}
+		}
+	}
+
 	if len(targets) == 0 {
 		flag.Usage()
 		osExit(1)
@@ -68,134 +138,254 @@ func main() {
 	}
 
 	if cfg.verbose {
-		log.Printf("processing %d targets", len(targets))
+		fmt.Fprintf(os.Stderr, "processing %d targets\n", len(targets))
+	}
+
+	if cfg.insecure {
+		if tr, ok := http.DefaultTransport.(*http.Transport); ok {
+			tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		}
 	}
 
 	var wg sync.WaitGroup
 	ctx := context.Background()
+	var exitCode int
+	var exitMu sync.Mutex
+	results := make([]targetResult, len(targets))
 
-	for _, target := range targets {
+	for i, target := range targets {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			continue
+		}
+		original := target
 		if !strings.HasPrefix(target, "http") {
 			target = "https://" + target
 		}
 
 		wg.Add(1)
-		go func(u string) {
+		go func(idx int, u, orig string) {
 			defer wg.Done()
-			if err := fetch(ctx, u, cfg); err != nil {
-				log.Printf("%s: %v", u, err)
+			res := targetResult{orig: orig}
+			emails, err := fetch(ctx, u, orig, cfg, &res)
+			if err != nil {
+				res.err = err
+				exitMu.Lock()
+				exitCode = 1
+				exitMu.Unlock()
 			}
-		}(target)
+			res.emails = emails
+			results[idx] = res
+		}(i, target, original)
 	}
 
 	wg.Wait()
 
-	if cfg.verbose {
+	var failedTargets []string
+	for _, res := range results {
+		if res.err != nil {
+			msg := "[network error]"
+			if cfg.verbose {
+				msg = fmt.Sprintf("network error: %v", res.err)
+			}
+			fmt.Fprintf(os.Stderr, "%s: %s\n", res.orig, msg)
+			failedTargets = append(failedTargets, res.orig)
+			continue
+		}
+		for _, email := range res.emails {
+			fmt.Fprintf(out, "%s: %s\n", res.orig, email)
+		}
+		if res.status != "" && !cfg.quiet {
+			fmt.Fprintf(os.Stderr, "%s: %s\n", res.orig, res.status)
+		}
+	}
+
+	if cfg.verbose && !cfg.quiet {
 		seen.Lock()
-		log.Printf("done: found %d unique emails across %d targets", len(seen.m), len(targets))
+		count := len(seen.m)
+		fmt.Fprintf(os.Stderr, "done: found %d unique emails across %d targets\n", count, len(targets))
+		if len(failedTargets) > 0 {
+			fmt.Fprintf(os.Stderr, "failed targets: %s\n", strings.Join(failedTargets, ", "))
+		}
 		seen.Unlock()
+	}
+
+	if exitCode != 0 {
+		osExit(exitCode)
 	}
 }
 
 // fetch retrieves the target URL and triggers parsing.
-func fetch(ctx context.Context, u string, cfg config) error {
+func fetch(ctx context.Context, u, orig string, cfg config, res *targetResult) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, cfg.timeout)
 	defer cancel()
 
-	if cfg.verbose {
-		log.Printf("%s: initializing request", u)
-	}
-
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("request error: %w", err)
 	}
 	req.Header.Set("User-Agent", cfg.ua)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
 
-	start := time.Now()
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("network error: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if cfg.verbose {
-		log.Printf("%s: %d %s (took %v)", u, resp.StatusCode, http.StatusText(resp.StatusCode), time.Since(start).Round(time.Millisecond))
-	}
-
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("server returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("server returned status %d (%s)", resp.StatusCode, http.StatusText(resp.StatusCode))
 	}
 
-	found := scan(resp.Body, u, cfg.verbose)
-	if cfg.verbose {
-		log.Printf("%s: extracted %d emails", u, found)
+	emails := scan(resp.Body, cfg.verbose)
+	if len(emails) == 0 {
+		res.status = "[no emails found]"
+	} else if cfg.verbose {
+		res.status = fmt.Sprintf("extracted %d emails", len(emails))
 	}
-	return nil
+	return emails, nil
 }
 
 // scan tokenizes the HTML and extracts emails from links and text.
-func scan(r io.Reader, u string, verbose bool) int {
-	var count int
+func scan(r io.Reader, verbose bool) []string {
+	var emails []string
+	var skip bool
 	z := html.NewTokenizer(r)
 	for {
 		tt := z.Next()
 		switch tt {
 		case html.ErrorToken:
 			if err := z.Err(); err != io.EOF && verbose {
-				log.Printf("%s: parse error: %v", u, err)
+				fmt.Fprintf(os.Stderr, "parse error: %v\n", err)
 			}
-			return count
+			return emails
 		case html.StartTagToken, html.SelfClosingTagToken:
 			t := z.Token()
-			if t.Data == "a" {
-				for _, a := range t.Attr {
-					if a.Key == "href" && strings.HasPrefix(strings.ToLower(a.Val), "mailto:") {
-						val := a.Val[7:]
-						if dec, err := url.PathUnescape(val); err == nil {
-							email := strings.SplitN(dec, "?", 2)[0]
-							if record(strings.TrimSpace(email)) {
-								count++
-							}
+			if t.Data == "script" || t.Data == "style" {
+				skip = true
+			}
+			// Check for data-cfemail (Cloudflare)
+			for _, a := range t.Attr {
+				if a.Key == "data-cfemail" {
+					if email := decodeCloudflare(a.Val); email != "" {
+						if isNew(email) {
+							emails = append(emails, email)
+						}
+					}
+				}
+				if t.Data == "a" && a.Key == "href" && strings.HasPrefix(strings.ToLower(a.Val), "mailto:") {
+					val := a.Val[7:]
+					if dec, err := url.PathUnescape(val); err == nil {
+						email := strings.SplitN(dec, "?", 2)[0]
+						email = strings.TrimSpace(email)
+						if isNew(email) {
+							emails = append(emails, email)
 						}
 					}
 				}
 			}
+		case html.EndTagToken:
+			t := z.Token()
+			if t.Data == "script" || t.Data == "style" {
+				skip = false
+			}
 		case html.TextToken:
+			if skip {
+				continue
+			}
 			t := z.Token()
 			data := unescapeUnicode(t.Data)
+			data = deobfuscate(data)
 			for _, m := range emailRE.FindAllString(data, -1) {
-				if record(m) {
-					count++
+				if isNew(m) {
+					emails = append(emails, m)
+				}
+			}
+			// Try ROT13 as well
+			r13 := rot13(data)
+			for _, m := range emailRE.FindAllString(r13, -1) {
+				if isNew(m) {
+					emails = append(emails, m)
 				}
 			}
 		}
 	}
 }
 
+// parseHex converts a hex string to uint32 without strconv.
+func parseHex(s string) (uint32, bool) {
+	var n uint32
+	if len(s) == 0 {
+		return 0, false
+	}
+	for i := 0; i < len(s); i++ {
+		var v byte
+		switch {
+		case s[i] >= '0' && s[i] <= '9':
+			v = s[i] - '0'
+		case s[i] >= 'a' && s[i] <= 'f':
+			v = s[i] - 'a' + 10
+		case s[i] >= 'A' && s[i] <= 'F':
+			v = s[i] - 'A' + 10
+		default:
+			return 0, false
+		}
+		n = (n << 4) | uint32(v)
+	}
+	return n, true
+}
+
 // unescapeUnicode replaces \uXXXX sequences with their actual characters.
 func unescapeUnicode(s string) string {
 	return unicodeRE.ReplaceAllStringFunc(s, func(m string) string {
-		r, err := strconv.ParseUint(m[2:], 16, 32)
-		if err != nil {
+		r, ok := parseHex(m[2:])
+		if !ok {
 			return m
 		}
 		return string(rune(r))
 	})
 }
 
-// record saves unique emails and prints them to stdout.
-func record(email string) bool {
+// decodeCloudflare decodes Cloudflare email protection.
+func decodeCloudflare(hex string) string {
+	if len(hex) < 2 {
+		return ""
+	}
+	k, ok := parseHex(hex[:2])
+	if !ok {
+		return ""
+	}
+	var b strings.Builder
+	for i := 2; i < len(hex)-1; i += 2 {
+		c, ok := parseHex(hex[i : i+2])
+		if !ok {
+			return ""
+		}
+		b.WriteByte(byte(c ^ k))
+	}
+	return b.String()
+}
+
+// deobfuscate handles patterns like "user [at] example [dot] com".
+func deobfuscate(s string) string {
+	s = atPatterns.ReplaceAllString(s, "@")
+	s = dotPatterns.ReplaceAllString(s, ".")
+	return s
+}
+
+// isNew checks if an email is unique and records it.
+func isNew(email string) bool {
 	if email == "" {
 		return false
 	}
 	email = strings.ToLower(email)
+	if !strings.Contains(email, "@") || !strings.Contains(email, ".") {
+		return false
+	}
 	seen.Lock()
 	defer seen.Unlock()
 	if _, ok := seen.m[email]; !ok {
 		seen.m[email] = struct{}{}
-		fmt.Fprintln(out, email)
 		return true
 	}
 	return false
