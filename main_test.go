@@ -50,7 +50,7 @@ func TestScan(t *testing.T) {
 		"test3@example.com",
 		"cf@example.com",
 		"user@example.com",
-		"test@example.com",
+		"rot13unique@example.com",
 		"mail@example.com",
 	}
 
@@ -266,6 +266,7 @@ func TestMainLogic(t *testing.T) {
 		{"WithInsecure", []string{"cmd", "-k", ts.URL}, ""},
 		{"WithVerboseFailure", []string{"cmd", "-v", "http://invalid.local.nonexistent"}, ""},
 		{"WithQuiet", []string{"cmd", "-q", ts.URL}, ""},
+		{"WithVersion", []string{"cmd", "-version"}, ""},
 	}
 
 	for _, tt := range tests {

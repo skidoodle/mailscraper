@@ -1,0 +1,28 @@
+version: 1
+
+env:
+  - GO111MODULE=on
+  - CGO_ENABLED=0
+
+flags:
+  - -trimpath
+  - -tags=netgo
+
+targets:
+  - goos: linux
+    goarch: amd64
+  - goos: windows
+    goarch: amd64
+  - goos: darwin
+    goarch: amd64
+  - goos: darwin
+    goarch: arm64
+
+binary: mailscraper-{{ .Os }}-{{ .Arch }}
+
+ldflags:
+  - -s -w
+  - -extldflags "-static"
+  - "-X main.Version={{ .Env.VERSION }}"
+  - "-X main.Commit={{ .Env.COMMIT }}"
+  - "-X main.CommitDate={{ .Env.COMMIT_DATE }}"

@@ -20,6 +20,11 @@ import (
 )
 
 var (
+	// Version info set via ldflags by goreleaser
+	Version    = "dev"
+	Commit     = "none"
+	CommitDate = "unknown"
+
 	// emailRE matches common email address formats.
 	emailRE = regexp.MustCompile(`(?i)[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}`)
 
@@ -77,12 +82,14 @@ func main() {
 	log.SetFlags(0)
 
 	var cfg config
+	var showVersion bool
 	flag.DurationVar(&cfg.timeout, "t", 15*time.Second, "network timeout")
 	flag.BoolVar(&cfg.verbose, "v", false, "verbose output")
 	flag.BoolVar(&cfg.quiet, "q", false, "suppress non-error output")
 	flag.BoolVar(&cfg.insecure, "k", false, "allow insecure SSL connections")
 	flag.StringVar(&cfg.ua, "a", "mailscraper/1.1", "user-agent string")
 	flag.StringVar(&cfg.file, "f", "", "read URLs from file")
+	flag.BoolVar(&showVersion, "version", false, "show version and exit")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: %s [-v] [-q] [-k] [-t timeout] [-a useragent] [-f file] [url ... | -]\n", os.Args[0])
@@ -90,6 +97,11 @@ func main() {
 	}
 
 	flag.Parse()
+
+	if showVersion {
+		fmt.Printf("mailscraper %s (%s) built at %s\n", Version, Commit, CommitDate)
+		return
+	}
 
 	targets := flag.Args()
 
