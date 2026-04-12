@@ -19,8 +19,6 @@ builds:
     ldflags:
       - -s -w -extldflags "-static"
       - -X main.Version={{.Version}}
-      - -X main.Commit={{.Commit}}
-      - -X main.CommitDate={{.Date}}
 
 archives:
   - format: tar.gz

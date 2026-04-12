@@ -344,53 +344,29 @@ func TestMainFileError(t *testing.T) {
 func TestGetVersion(t *testing.T) {
 	mockInfo := &debug.BuildInfo{
 		Main: debug.Module{Version: "v1.2.3"},
-		Settings: []debug.BuildSetting{
-			{Key: "vcs.revision", Value: "hash123"},
-			{Key: "vcs.time", Value: "2026-04-12"},
-			{Key: "other", Value: "value"},
-		},
 	}
 
-	// 1. Test full resolution (dev/none/unknown)
-	v, c, d := getVersion("dev", "none", "unknown", func() (*debug.BuildInfo, bool) {
+	// 1. Test resolution from build info
+	v := getVersion("(devel)", func() (*debug.BuildInfo, bool) {
 		return mockInfo, true
 	})
-	if v != "v1.2.3" || c != "hash123" || d != "2026-04-12" {
-		t.Errorf("expected resolution, got %s, %s, %s", v, c, d)
+	if v != "v1.2.3" {
+		t.Errorf("expected resolution, got %s", v)
 	}
 
-	// 2. Test override prevention (values already set)
-	v2, c2, d2 := getVersion("v1.1.0", "commit", "date", func() (*debug.BuildInfo, bool) {
+	// 2. Test override prevention
+	v2 := getVersion("v1.1.0", func() (*debug.BuildInfo, bool) {
 		return mockInfo, true
 	})
-	if v2 != "v1.1.0" || c2 != "commit" || d2 != "date" {
-		t.Errorf("expected no override, got %s, %s, %s", v2, c2, d2)
+	if v2 != "v1.1.0" {
+		t.Errorf("expected no override, got %s", v2)
 	}
 
 	// 3. Test failed ReadBuildInfo
-	v3, c3, d3 := getVersion("(devel)", "none", "unknown", func() (*debug.BuildInfo, bool) {
+	v3 := getVersion("(devel)", func() (*debug.BuildInfo, bool) {
 		return nil, false
 	})
-	if v3 != "(devel)" || c3 != "none" || d3 != "unknown" {
-		t.Errorf("expected defaults on failure, got %s, %s, %s", v3, c3, d3)
-	}
-
-	// 4. Test (devel) and empty string resolution
-	v4, c4, d4 := getVersion("(devel)", "", "", func() (*debug.BuildInfo, bool) {
-		return mockInfo, true
-	})
-	if v4 != "v1.2.3" || c4 != "hash123" || d4 != "2026-04-12" {
-		t.Errorf("expected resolution for devel/empty, got %s, %s, %s", v4, c4, d4)
-	}
-
-	// 5. Test pseudo-version parsing
-	mockPseudo := &debug.BuildInfo{
-		Main: debug.Module{Version: "v0.0.0-20230101000000-abcdef123456"},
-	}
-	v5, c5, d5 := getVersion("(devel)", "none", "unknown", func() (*debug.BuildInfo, bool) {
-		return mockPseudo, true
-	})
-	if c5 != "abcdef123456" || d5 != "2023-01-01T00:00:00Z" {
-		t.Errorf("expected pseudo-version resolution, got %s, %s, %s", v5, c5, d5)
+	if v3 != "(devel)" {
+		t.Errorf("expected defaults on failure, got %s", v3)
 	}
 }

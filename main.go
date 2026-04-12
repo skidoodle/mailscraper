@@ -22,9 +22,7 @@ import (
 
 var (
 	// Version info set via ldflags by goreleaser
-	Version    = "(devel)"
-	Commit     = "none"
-	CommitDate = "unknown"
+	Version = "(devel)"
 
 	// emailRE matches common email address formats.
 	emailRE = regexp.MustCompile(`(?i)[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}`)
@@ -100,8 +98,8 @@ func main() {
 	flag.Parse()
 
 	if showVersion {
-		v, c, d := getVersion(Version, Commit, CommitDate, debug.ReadBuildInfo)
-		fmt.Printf("mailscraper %s (%s) built at %s\n", v, c, d)
+		v := getVersion(Version, debug.ReadBuildInfo)
+		fmt.Printf("mailscraper %s\n", v)
 		return
 	}
 
@@ -229,42 +227,16 @@ func main() {
 	}
 }
 
-// getVersion resolves the version, commit, and date using build info if needed.
-func getVersion(v, c, d string, rbi func() (*debug.BuildInfo, bool)) (string, string, string) {
+// getVersion resolves the version using build info if needed.
+func getVersion(v string, rbi func() (*debug.BuildInfo, bool)) string {
 	if info, ok := rbi(); ok {
 		if v == "dev" || v == "" || v == "(devel)" {
 			if info.Main.Version != "" && info.Main.Version != "(devel)" {
 				v = info.Main.Version
 			}
 		}
-
-		if (c == "none" || c == "") && strings.Contains(v, "-") {
-			parts := strings.Split(v, "-")
-			if len(parts) >= 3 {
-				c = parts[len(parts)-1]
-				if (d == "unknown" || d == "") && len(parts[len(parts)-2]) == 14 {
-					t, err := time.Parse("20060102150405", parts[len(parts)-2])
-					if err == nil {
-						d = t.Format(time.RFC3339)
-					}
-				}
-			}
-		}
-
-		for _, s := range info.Settings {
-			switch s.Key {
-			case "vcs.revision":
-				if c == "none" || c == "" {
-					c = s.Value
-				}
-			case "vcs.time":
-				if d == "unknown" || d == "" {
-					d = s.Value
-				}
-			}
-		}
 	}
-	return v, c, d
+	return v
 }
 
 // fetch retrieves the target URL and triggers parsing.
