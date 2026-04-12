@@ -1,12 +1,4 @@
-version: 1
-
-env:
-  - GO111MODULE=on
-  - CGO_ENABLED=0
-
-flags:
-  - -trimpath
-  - -tags=netgo
+version: 2
 
 builds:
   - id: mailscraper
@@ -19,6 +11,11 @@ builds:
     goarch:
       - amd64
       - arm64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+      - -tags=netgo
     ldflags:
       - -s -w -extldflags "-static"
       - -X main.Version={{.Version}}
