@@ -11,4 +11,4 @@ FLAGS:
   -a string    custom user agent
 
 INSTALL:
-  go build -o mailscraper .
+  go install github.com/skidoodle/mailscraper@latest
